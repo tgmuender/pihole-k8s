@@ -1,0 +1,169 @@
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pihole
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pihole
+  namespace: pihole
+  labels:
+    app: pihole
+    component: pihole
+    tier: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pihole
+      component: pihole
+      tier: frontend
+  template:
+    metadata:
+      labels:
+        app: pihole
+        component: pihole
+        tier: frontend
+    spec:
+      containers:
+      - name: pihole
+        image: pihole/pihole:v5.7
+        imagePullPolicy: Always
+        ports:
+          - containerPort: 80
+          - containerPort: 53
+          - containerPort: 53
+            protocol: UDP
+        env:
+          - name: WEBPASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: pihole
+                key: password
+          - name: DNS1
+            value: 1.1.1.1
+        livenessProbe:
+          httpGet:
+            path: /index.php
+            port: 80
+          initialDelaySeconds: 60
+          periodSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /index.php
+            port: 80
+          initialDelaySeconds: 25
+          periodSeconds: 5
+        resources:
+          limits:
+            cpu: "250m"
+            memory: "1024Mi"
+          requests:
+            cpu: "100m"
+            memory: "520Mi"
+      - name: pihole-prometheus-exporter
+        image: ekofr/pihole-exporter:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 9100
+          protocol: TCP
+        env:
+        - name: PORT
+          value: "9100"
+        - name: PIHOLE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pihole
+              key: password
+        - name: PIHOLE_HOSTNAME
+          value: localhost
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: 9100
+          initialDelaySeconds: 30
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: 9100
+          periodSeconds: 30
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "250m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pihole-svc-tcp
+  annotations:
+    metallb.universe.tf/address-pool: cluster-lb-pool
+  namespace: pihole
+spec:
+  selector:
+    app: pihole
+  ports:
+    - name: web
+      port: 80
+      targetPort: 80
+      protocol: TCP
+    - name: dns-tcp
+      port: 53
+      targetPort: 53
+      protocol: TCP
+    - name: metrics
+      port: 9100
+      targetPort: 9100
+      protocol: TCP
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  loadBalancerIP: 192.168.20.100
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pihole-svc-udp
+  annotations:
+    metallb.universe.tf/address-pool: cluster-lb-pool
+  namespace: pihole
+spec:
+  selector:
+    app: pihole
+  ports:
+    - name: dns-udp
+      port: 53
+      targetPort: 53
+      protocol: UDP
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  loadBalancerIP: 192.168.20.101
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+    name: pihole-ingress
+    namespace: pihole
+    annotations:
+      kubernetes.io/ingress.class: nginx
+      nginx.ingress.kubernetes.io/app-root: /admin/
+      nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+    rules:
+    - host: pihole.kls.mydomain.com
+      http:
+          paths:
+          - path: /
+            pathType: Prefix
+            backend:
+                service:
+                  name: pihole-svc-tcp
+                  port: 
+                    number: 80
+    tls:
+      - hosts:
+        - pihole.kls.mydomain.com
